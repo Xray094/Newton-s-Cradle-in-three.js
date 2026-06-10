@@ -1,0 +1,68 @@
+# ==============================================================================
+# Three.js / Frontend GitIgnore Template
+# ==============================================================================
+
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.vuepress/dist/
+
+# Development / Bundler caches
+.vite/
+.parcel-cache/
+.eslintcache/
+.turbo/
+tsbuildinfo.json
+
+# 3D Assets & Large Media (Crucial for Three.js)
+# Git is not designed for heavy binary files. Keep these in public/ or source, 
+# but if you use massive raw uncompressed assets, consider tracking them outside Git.
+*.obj
+*.fbx
+*.gltf
+*.glb
+*.bin
+*.mp4
+*.wav
+*.mp3
+# Note: If these are small/core to your app, remove them from here so they DO upload.
+
+# Environment variables & secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env.json
+
+# IDE / System files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+
+static/
+
+src/shaders/
