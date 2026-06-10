@@ -15,6 +15,7 @@ const parameters = {
     count: 5,                     // Number of balls
     launchBalls: 1,               // Number of balls to lift
     launchAngleDeg: 30,
+    enableSound: true,            // Toggle sound effects
     launch: () => setupCradle()   // Trigger re-initialization
 }
 
@@ -78,6 +79,48 @@ ground.rotation.x = - Math.PI * 0.5
 ground.position.y = -0.02
 ground.receiveShadow = true
 scene.add(ground)
+
+/**
+ * Web Audio API - Procedural Metallic Clack Generator
+ */
+let audioCtx = null
+
+function playClackSound(intensity) {
+    if (!parameters.enableSound || intensity < 0.05) return
+
+    // Initialize audio context on first physical impact (browser privacy requirement)
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    }
+
+    // Resume context if suspended (common in modern browsers)
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume()
+    }
+
+    const now = audioCtx.currentTime
+    
+    // Create audio nodes
+    const osc = audioCtx.createOscillator()
+    const gainNode = audioCtx.createGain()
+    
+    // Metallic impact profile: high frequency base with a rapid decaying envelope
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(2200, now) 
+    osc.frequency.exponentialRampToValueAtTime(800, now + 0.015) // Rapid downward pitch bend mimic solid steel
+
+    // Scale overall volume based on impact relative velocity intensity
+    const maxVolume = Math.min(0.3, intensity * 0.15)
+    gainNode.gain.setValueAtTime(maxVolume, now)
+    gainNode.gain.exponentialRampToValueAtTime(0.00001, now + 0.025) // Super short decay for "click/clack" texture
+
+    // Connect and execute sound synthesis thread
+    osc.connect(gainNode)
+    gainNode.connect(audioCtx.destination)
+    
+    osc.start(now)
+    osc.stop(now + 0.03)
+}
 
 /**
  * Newton's Cradle Architectural Configurations
@@ -160,7 +203,8 @@ function setupCradle() {
             vy: 0,
             mesh: sphere,
             ropeGeometry: ropeGeometry,
-            ropePoints: ropePoints
+            ropePoints: ropePoints,
+            inContactLastFrame: false // Tracking variable to prevent repeated trigger spamming within a compression cycle
         }
 
         // Apply initial lifting displacement to specific selected balls (Discrete State Transition)
@@ -237,6 +281,13 @@ function stepPhysics(dt) {
                     const rvy = b2.vy - b1.vy
                     const vNormal = rvx * nx + rvy * ny
 
+                    // --- AUDITORY SENSOR EMISSION TRIGGER ---
+                    // Trigger sound only during the initial frame of interpenetration to prevent continuous cycle sound generation loops
+                    if (!b1.inContactLastFrame && vNormal < -0.01 && pass === 0) {
+                        const impactSpeed = Math.abs(vNormal)
+                        playClackSound(impactSpeed)
+                    }
+
                     // Add Viscoelastic Damping Force to regulate elastic dissipation behavior
                     const dampingForce = - parameters.contactDamping * vNormal * Math.sqrt(delta)
                     const totalForce = Math.max(0, hertzForceMagnitude + dampingForce)
@@ -257,7 +308,12 @@ function stepPhysics(dt) {
                     
                     const cos2 = Math.cos(b2.theta)
                     b2.omega = (b2.vx * cos2 + b2.vy * Math.sin(b2.theta)) / L
+                    
+                    b1.inContactLastFrame = true
                 }
+            } else {
+                // Clear state once balls physically part ways out of the micro-deformation boundary
+                if (pass === 0) b1.inContactLastFrame = false
             }
         }
     }
@@ -287,6 +343,7 @@ const gui = new dat.GUI({ width: 380 })
 const envFolder = gui.addFolder('Environment Configuration')
 envFolder.add(parameters, 'gravity').min(0).max(25).step(0.1).name('Gravity (g)')
 envFolder.add(parameters, 'angularDamping').min(0).max(1).step(0.01).name('Air Resistance')
+envFolder.add(parameters, 'enableSound').name('Enable Clack Sound')
 envFolder.open()
 
 const hertzFolder = gui.addFolder('Hertzian Contact Mechanics')
@@ -298,7 +355,6 @@ hertzFolder.open()
 const setupFolder = gui.addFolder('Cradle Assembly Setup')
 setupFolder.add(parameters, 'count').min(2).max(8).step(1).name('Total Balls Count').onChange(() => setupCradle())
 setupFolder.add(parameters, 'launchBalls').min(1).max(7).step(1).name('Balls to Drop').onChange((val) => {
-    // Constraint safety: Can't lift more balls than exist in cradle total
     if(val >= parameters.count) parameters.launchBalls = parameters.count - 1
 })
 setupFolder.add(parameters, 'launchAngleDeg').min(5).max(75).step(1).name('Drop Angle (°)').onChange(() => setupCradle())
@@ -312,19 +368,16 @@ const clock = new THREE.Clock()
 let accumulator = 0
 
 const tick = () => {
-    // Lock max calculation frames steps down during window stutters to protect stability
     const delta = Math.min(clock.getDelta(), 0.033)
     accumulator += delta
 
     const physicsStep = 1 / parameters.physicsHz
     
-    // Substepping processing loop executing exact scientific step durations
     while(accumulator >= physicsStep) {
         stepPhysics(physicsStep)
         accumulator -= physicsStep
     }
 
-    // Refresh display
     updateVisuals()
     controls.update()
     renderer.render(scene, camera)
