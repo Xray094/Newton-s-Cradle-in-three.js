@@ -5,40 +5,40 @@ import * as dat from 'dat.gui'
 
 /**
  * ============================================================================
- *  PHYSICS REFERENCE (matches "دراسة حركة بندول نيوتن" chapters 1 & 2)
+ * PHYSICS REFERENCE (matches "دراسة حركة بندول نيوتن" chapters 1 & 2)
  * ============================================================================
- *  Single pendulum, real (damped) equation of motion (Ch.1 §2):
- *      τ_net = -m g L sin(θ) - c L² ω - b ω
- *      α = τ_net / (m L²) = -(g/L) sin(θ) - (c/m) ω - (b/(mL²)) ω
- *  where:
- *      c -> air resistance coefficient (linear drag on the ball, F_d = -c v)
- *      b -> friction/damping at the suspension pivot (τ_f = -b ω)
+ * Single pendulum, real (damped) equation of motion (Ch.1 §2):
+ * τ_net = -m g L sin(θ) - c L² ω - b ω
+ * α = τ_net / (m L²) = -(g/L) sin(θ) - (c/m) ω - (b/(mL²)) ω
+ * where:
+ * c -> air resistance coefficient (linear drag on the ball, F_d = -c v)
+ * b -> friction/damping at the suspension pivot (τ_f = -b ω)
  *
- *  Integration (Ch.1 §3): Semi-implicit ("symplectic") Euler
- *      ω(n+1) = ω(n) + α(n) Δt
- *      θ(n+1) = θ(n) + ω(n+1) Δt      <-- uses the *updated* ω, this is what
- *                                          makes semi-implicit Euler stable
- *                                          for oscillatory systems.
+ * Integration (Ch.1 §3): Semi-implicit ("symplectic") Euler
+ * ω(n+1) = ω(n) + α(n) Δt
+ * θ(n+1) = θ(n) + ω(n+1) Δt      <-- uses the *updated* ω, this is what
+ * makes semi-implicit Euler stable
+ * for oscillatory systems.
  *
- *  Energy (Ch.1 §4):
- *      U = m g L (1 - cos θ)          potential energy
- *      K = 1/2 m (Lω)²                kinetic energy (v = Lω)
- *      E = U + K should only ever decrease (never increase) for a
- *      physically valid damped/dissipative simulation -> used below as a
- *      live sanity check, exactly as the report recommends.
+ * Energy (Ch.1 §4):
+ * U = m g L (1 - cos θ)          potential energy
+ * K = 1/2 m (Lω)²                kinetic energy (v = Lω)
+ * E = U + K should only ever decrease (never increase) for a
+ * physically valid damped/dissipative simulation -> used below as a
+ * live sanity check, exactly as the report recommends.
  *
- *  Contact / collision (Ch.2 §4): Hertzian non-linear contact theory
- *      δ  = (R1+R2) - distance_between_centers      (interpenetration depth)
- *      F_hertz = K_h * δ^1.5                        (Hertz's law, F ∝ δ^3/2)
- *      K_h = (4/3) E_eff sqrt(R_eff)                 (generalized stiffness)
- *      1/E_eff = 2(1-ν²)/E   (identical spheres)     R_eff = R/2
+ * Contact / collision (Ch.2 §4): Hertzian non-linear contact theory
+ * δ  = (R1+R2) - distance_between_centers      (interpenetration depth)
+ * F_hertz = K_h * δ^1.5                        (Hertz's law, F ∝ δ^3/2)
+ * K_h = (4/3) E_eff sqrt(R_eff)                 (generalized stiffness)
+ * 1/E_eff = 2(1-ν²)/E   (identical spheres)     R_eff = R/2
  *
- *  Restitution coefficient e (Ch.2 §2-3): the report *defines* e as the
- *  ratio of separation speed to approach speed at a contact - it is an
- *  emergent property of the Hertz + viscoelastic-damping contact model,
- *  not something you dial in directly. So instead of faking it with a
- *  bounce multiplier, this sim *measures* e live from every collision and
- *  reports it back in the GUI, which is exactly how the report defines it.
+ * Restitution coefficient e (Ch.2 §2-3): the report *defines* e as the
+ * ratio of separation speed to approach speed at a contact - it is an
+ * emergent property of the Hertz + viscoelastic-damping contact model,
+ * not something you dial in directly. So instead of faking it with a
+ * bounce multiplier, this sim *measures* e live from every collision and
+ * reports it back in the GUI, which is exactly how the report defines it.
  * ============================================================================
  */
 
@@ -50,14 +50,14 @@ const parameters = {
     airResistanceC: 0.05,     // c : linear air drag coefficient
     pivotFrictionB: 0.02,     // b : suspension-point friction coefficient
     stiffnessSoftening: 2e-4, // real steel K_h is ~1e10-1e11 and needs a Δt
-                               // far smaller than real-time can afford (the
-                               // report itself notes the shockwave crosses a
-                               // ball chain in microseconds). We keep the
-                               // correct δ^1.5 Hertz *shape* but scale K_h
-                               // down so a 2000Hz timestep stays stable -
-                               // this preserves the qualitative physics
-                               // (relative stiffness between configurations)
-                               // while remaining real-time.
+                              // far smaller than real-time can afford (the
+                              // report itself notes the shockwave crosses a
+                              // ball chain in microseconds). We keep the
+                              // correct δ^1.5 Hertz *shape* but scale K_h
+                              // down so a 2000Hz timestep stays stable -
+                              // this preserves the qualitative physics
+                              // (relative stiffness between configurations)
+                              // while remaining real-time.
     contactDamping: 15.0,      // viscoelastic damping during compression
     physicsHz: 2000,           // required to resolve microsecond-scale Hertz
                                // contact events without tunnelling (Ch.2 §4)
@@ -83,7 +83,7 @@ function computeBaseHertzStiffness(radius) {
 // Canvas & Scene setup
 const canvas = document.querySelector('canvas.webgl')
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0xdde4ec)
+scene.background = new THREE.Color(0xf1f3f5) // Cleaner, premium modern background
 
 /**
  * Window Resize
@@ -101,11 +101,12 @@ window.addEventListener('resize', () => {
  * Camera & Controls
  */
 const camera = new THREE.PerspectiveCamera(45, sizes.width / sizes.height, 0.1, 100)
-camera.position.set(0, 1.85, 4.5)
+camera.position.set(2.5, 2.5, 4.0) // Dynamic view angle for the 3D frame
 scene.add(camera)
 
 const controls = new OrbitControls(camera, canvas)
 controls.enableDamping = true
+controls.maxPolarAngle = Math.PI / 2 - 0.02 // Prevent camera from traveling under the floor
 controls.target.set(0, 0.95, 0)
 
 /**
@@ -120,26 +121,40 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap
 /**
  * Lights
  */
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.7)
 scene.add(ambientLight)
 
-const keyLight = new THREE.DirectionalLight(0xffffff, 1.0)
-keyLight.position.set(5, 8, 5)
+// Studio lighting setup for sharp reflection highlights and soft shadows
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.9)
+keyLight.position.set(4, 7, 3)
 keyLight.castShadow = true
-keyLight.shadow.mapSize.set(2024, 2024)
+keyLight.shadow.mapSize.set(2048, 2048)
+keyLight.shadow.bias = -0.0001
 scene.add(keyLight)
+
+const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.4) // Subtle blue fill from opposing side
+fillLight.position.set(-4, 3, -3)
+scene.add(fillLight)
 
 /**
  * Ground
  */
+const groundGroup = new THREE.Group()
+scene.add(groundGroup)
+
 const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(20, 20),
-    new THREE.MeshStandardMaterial({ color: 0xc8d0d8, roughness: 0.8 })
+    new THREE.PlaneGeometry(30, 30),
+    new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.6, metalness: 0.1 })
 )
 ground.rotation.x = - Math.PI * 0.5
 ground.position.y = -0.02
 ground.receiveShadow = true
-scene.add(ground)
+groundGroup.add(ground)
+
+// Studio floor grid line accents
+const gridHelper = new THREE.GridHelper(20, 20, 0xcbced4, 0xe2e8f0)
+gridHelper.position.y = -0.01
+groundGroup.add(gridHelper)
 
 /**
  * Web Audio API - Procedural Metallic Clack Generator
@@ -179,10 +194,10 @@ function playClackSound(intensity) {
  * Newton's Cradle Architectural Configurations
  */
 const config = {
-    ballRadius: 0.25,
+    ballRadius: 0.22, // Realistic layout proportions
     stringLength: 1.5,
     topY: 2.2,
-    frameDepth: 0.9
+    frameDepth: 1.0  // Depth thickness mapping for the outer crossbeams
 }
 
 // Global structural groups and data tracking
@@ -192,9 +207,11 @@ let bobs = []
 let contactEpisodes = [] // per-pair tracking used to measure e = v_sep/v_approach
 
 const ballGeometry = new THREE.SphereGeometry(config.ballRadius, 64, 64)
-const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.9, roughness: 0.1 })
-const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x323840, metalness: 0.5, roughness: 0.2 })
-const ropeMaterial = new THREE.LineBasicMaterial({ color: 0x222222 })
+// Polished mirror-chrome finish
+const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1.0, roughness: 0.02 })
+// Industrial structural matte frame
+const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x22262b, metalness: 0.7, roughness: 0.2 })
+const ropeMaterial = new THREE.LineBasicMaterial({ color: 0x555555 })
 
 /**
  * Setup / Rebuild Cradle Architecture dynamically based on user controls
@@ -207,24 +224,49 @@ function setupCradle() {
     bobs = []
 
     const spacing = config.ballRadius * 2.001 // micro-gap between balls,
-                                                // referenced in Ch.2 §4 as the
-                                                // reason the shockwave takes
-                                                // a (very small) finite time
-                                                // to cross the chain
+                                               // referenced in Ch.2 §4 as the
+                                               // reason the shockwave takes
+                                               // a (very small) finite time
+                                               // to cross the chain
     const totalWidth = (parameters.count - 1) * spacing
+    const structureLength = Math.max(totalWidth + 1.0, 2.0)
+    const halfDepth = config.frameDepth * 0.5
 
-    const topRail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, totalWidth + 0.8, 24), poleMaterial)
-    topRail.rotation.z = Math.PI * 0.5
-    topRail.position.set(0, config.topY, 0)
-    topRail.castShadow = true
-    cradleGroup.add(topRail)
+    // --- ENHANCED STRUCTURAL FRAME (Connected canopy structure) ---
 
+    // Central cross rail to which the single-line ropes are anchored down the middle
+    const centerRail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, structureLength, 24), poleMaterial)
+    centerRail.rotation.z = Math.PI * 0.5
+    centerRail.position.set(0, config.topY, 0)
+    centerRail.castShadow = true
+    cradleGroup.add(centerRail)
+
+    // Two outer parallel support rods along the depth limits to form the solid rectangular canopy
+    for (let zDir of [-1, 1]) {
+        const sideBar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, structureLength, 24), poleMaterial)
+        sideBar.rotation.z = Math.PI * 0.5
+        sideBar.position.set(0, config.topY, zDir * halfDepth)
+        sideBar.castShadow = true
+        cradleGroup.add(sideBar)
+    }
+
+    // Transverse connecting rods interlocking the side rails to the frame ends like a structural chassis
+    const crossBarGeom = new THREE.CylinderGeometry(0.025, 0.025, config.frameDepth, 24)
+    const crossBarOffset = structureLength * 0.5
+    for (let xDir of [-1, 1]) {
+        const crossBar = new THREE.Mesh(crossBarGeom, poleMaterial)
+        crossBar.rotation.x = Math.PI * 0.5
+        crossBar.position.set(xDir * crossBarOffset, config.topY, 0)
+        crossBar.castShadow = true
+        cradleGroup.add(crossBar)
+    }
+
+    // 4 Corner support pillars linking down from the intersections to ground the apparatus safely
     const legGeom = new THREE.CylinderGeometry(0.035, 0.035, config.topY, 20)
-    const legX = totalWidth * 0.5 + 0.3
     for (let side of [-1, 1]) {
         for (let zDir of [-1, 1]) {
             const leg = new THREE.Mesh(legGeom, poleMaterial)
-            leg.position.set(side * legX, config.topY * 0.5, zDir * config.frameDepth * 0.4)
+            leg.position.set(side * crossBarOffset, config.topY * 0.5, zDir * halfDepth)
             leg.castShadow = true
             cradleGroup.add(leg)
         }
@@ -238,6 +280,7 @@ function setupCradle() {
         sphere.receiveShadow = true
         cradleGroup.add(sphere)
 
+        // Single rope suspension model anchored directly beneath the center structural beam
         const ropePoints = [new THREE.Vector3(anchorX, config.topY, 0), new THREE.Vector3()]
         const ropeGeometry = new THREE.BufferGeometry().setFromPoints(ropePoints)
         const rope = new THREE.Line(ropeGeometry, ropeMaterial)
