@@ -4,19 +4,80 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as dat from 'dat.gui'
 
 /**
- * Debug controls & Core Physics Parameters matching the study
+ * ============================================================================
+ *  PHYSICS REFERENCE (matches "دراسة حركة بندول نيوتن" chapters 1 & 2)
+ * ============================================================================
+ *  Single pendulum, real (damped) equation of motion (Ch.1 §2):
+ *      τ_net = -m g L sin(θ) - c L² ω - b ω
+ *      α = τ_net / (m L²) = -(g/L) sin(θ) - (c/m) ω - (b/(mL²)) ω
+ *  where:
+ *      c -> air resistance coefficient (linear drag on the ball, F_d = -c v)
+ *      b -> friction/damping at the suspension pivot (τ_f = -b ω)
+ *
+ *  Integration (Ch.1 §3): Semi-implicit ("symplectic") Euler
+ *      ω(n+1) = ω(n) + α(n) Δt
+ *      θ(n+1) = θ(n) + ω(n+1) Δt      <-- uses the *updated* ω, this is what
+ *                                          makes semi-implicit Euler stable
+ *                                          for oscillatory systems.
+ *
+ *  Energy (Ch.1 §4):
+ *      U = m g L (1 - cos θ)          potential energy
+ *      K = 1/2 m (Lω)²                kinetic energy (v = Lω)
+ *      E = U + K should only ever decrease (never increase) for a
+ *      physically valid damped/dissipative simulation -> used below as a
+ *      live sanity check, exactly as the report recommends.
+ *
+ *  Contact / collision (Ch.2 §4): Hertzian non-linear contact theory
+ *      δ  = (R1+R2) - distance_between_centers      (interpenetration depth)
+ *      F_hertz = K_h * δ^1.5                        (Hertz's law, F ∝ δ^3/2)
+ *      K_h = (4/3) E_eff sqrt(R_eff)                 (generalized stiffness)
+ *      1/E_eff = 2(1-ν²)/E   (identical spheres)     R_eff = R/2
+ *
+ *  Restitution coefficient e (Ch.2 §2-3): the report *defines* e as the
+ *  ratio of separation speed to approach speed at a contact - it is an
+ *  emergent property of the Hertz + viscoelastic-damping contact model,
+ *  not something you dial in directly. So instead of faking it with a
+ *  bounce multiplier, this sim *measures* e live from every collision and
+ *  reports it back in the GUI, which is exactly how the report defines it.
+ * ============================================================================
  */
+
+const STEEL_E = 200e9      // Young's modulus of steel (Pa)
+const STEEL_NU = 0.3       // Poisson's ratio of steel
+
 const parameters = {
     gravity: 9.81,
-    angularDamping: 0.15,         // Air resistance / pivot friction
-    hertzStiffness: 4e6,          // Material stiffness coefficient (Kh) from Hertzian Theory
-    contactDamping: 15.0,         // Viscoelastic damping during compression micro-seconds
-    physicsHz: 2000,              // High frequency required to stabilize microscopic Hertzian forces
-    count: 5,                     // Number of balls
-    launchBalls: 1,               // Number of balls to lift
+    airResistanceC: 0.05,     // c : linear air drag coefficient
+    pivotFrictionB: 0.02,     // b : suspension-point friction coefficient
+    stiffnessSoftening: 2e-4, // real steel K_h is ~1e10-1e11 and needs a Δt
+                               // far smaller than real-time can afford (the
+                               // report itself notes the shockwave crosses a
+                               // ball chain in microseconds). We keep the
+                               // correct δ^1.5 Hertz *shape* but scale K_h
+                               // down so a 2000Hz timestep stays stable -
+                               // this preserves the qualitative physics
+                               // (relative stiffness between configurations)
+                               // while remaining real-time.
+    contactDamping: 15.0,      // viscoelastic damping during compression
+    physicsHz: 2000,           // required to resolve microsecond-scale Hertz
+                               // contact events without tunnelling (Ch.2 §4)
+    count: 5,
+    launchBalls: 1,
     launchAngleDeg: 30,
-    enableSound: true,            // Toggle sound effects
-    launch: () => setupCradle()   // Trigger re-initialization
+    enableSound: true,
+    launch: () => setupCradle(),
+
+    // Live validation readouts (Ch.1 §4 energy check, Ch.2 §3 restitution)
+    totalEnergy: 0,
+    lastMeasuredE: 1.0
+}
+
+// Derived (physically real) Hertz stiffness for identical steel spheres,
+// K_h = (4/3) * E_eff * sqrt(R_eff)
+function computeBaseHertzStiffness(radius) {
+    const Eeff = STEEL_E / (2 * (1 - STEEL_NU * STEEL_NU))
+    const Reff = radius / 2
+    return (4 / 3) * Eeff * Math.sqrt(Reff)
 }
 
 // Canvas & Scene setup
@@ -88,36 +149,28 @@ let audioCtx = null
 function playClackSound(intensity) {
     if (!parameters.enableSound || intensity < 0.05) return
 
-    // Initialize audio context on first physical impact (browser privacy requirement)
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)()
     }
-
-    // Resume context if suspended (common in modern browsers)
     if (audioCtx.state === 'suspended') {
         audioCtx.resume()
     }
 
     const now = audioCtx.currentTime
-    
-    // Create audio nodes
     const osc = audioCtx.createOscillator()
     const gainNode = audioCtx.createGain()
-    
-    // Metallic impact profile: high frequency base with a rapid decaying envelope
-    osc.type = 'triangle'
-    osc.frequency.setValueAtTime(2200, now) 
-    osc.frequency.exponentialRampToValueAtTime(800, now + 0.015) // Rapid downward pitch bend mimic solid steel
 
-    // Scale overall volume based on impact relative velocity intensity
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(2200, now)
+    osc.frequency.exponentialRampToValueAtTime(800, now + 0.015)
+
     const maxVolume = Math.min(0.3, intensity * 0.15)
     gainNode.gain.setValueAtTime(maxVolume, now)
-    gainNode.gain.exponentialRampToValueAtTime(0.00001, now + 0.025) // Super short decay for "click/clack" texture
+    gainNode.gain.exponentialRampToValueAtTime(0.00001, now + 0.025)
 
-    // Connect and execute sound synthesis thread
     osc.connect(gainNode)
     gainNode.connect(audioCtx.destination)
-    
+
     osc.start(now)
     osc.stop(now + 0.03)
 }
@@ -136,6 +189,7 @@ const config = {
 let cradleGroup = new THREE.Group()
 scene.add(cradleGroup)
 let bobs = []
+let contactEpisodes = [] // per-pair tracking used to measure e = v_sep/v_approach
 
 const ballGeometry = new THREE.SphereGeometry(config.ballRadius, 64, 64)
 const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.9, roughness: 0.1 })
@@ -146,28 +200,29 @@ const ropeMaterial = new THREE.LineBasicMaterial({ color: 0x222222 })
  * Setup / Rebuild Cradle Architecture dynamically based on user controls
  */
 function setupCradle() {
-    // Clear old visual components from scene graph
-    while(cradleGroup.children.length > 0) { 
+    while (cradleGroup.children.length > 0) {
         const obj = cradleGroup.children[0]
-        cradleGroup.remove(obj) 
+        cradleGroup.remove(obj)
     }
     bobs = []
 
-    const spacing = config.ballRadius * 2.001 // Microscopic structural gap clearance
+    const spacing = config.ballRadius * 2.001 // micro-gap between balls,
+                                                // referenced in Ch.2 §4 as the
+                                                // reason the shockwave takes
+                                                // a (very small) finite time
+                                                // to cross the chain
     const totalWidth = (parameters.count - 1) * spacing
 
-    // Build Supporting Top Rail Structure
     const topRail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, totalWidth + 0.8, 24), poleMaterial)
     topRail.rotation.z = Math.PI * 0.5
     topRail.position.set(0, config.topY, 0)
     topRail.castShadow = true
     cradleGroup.add(topRail)
 
-    // Build Side Stand Legs
     const legGeom = new THREE.CylinderGeometry(0.035, 0.035, config.topY, 20)
     const legX = totalWidth * 0.5 + 0.3
-    for(let side of [-1, 1]) {
-        for(let zDir of [-1, 1]) {
+    for (let side of [-1, 1]) {
+        for (let zDir of [-1, 1]) {
             const leg = new THREE.Mesh(legGeom, poleMaterial)
             leg.position.set(side * legX, config.topY * 0.5, zDir * config.frameDepth * 0.4)
             leg.castShadow = true
@@ -175,11 +230,9 @@ function setupCradle() {
         }
     }
 
-    // Instantiate State Arrays for Individual Pendulum Bobs
-    for(let i = 0; i < parameters.count; i++) {
+    for (let i = 0; i < parameters.count; i++) {
         const anchorX = (i - (parameters.count - 1) * 0.5) * spacing
-        
-        // Renderable Visual Node elements
+
         const sphere = new THREE.Mesh(ballGeometry, ballMaterial)
         sphere.castShadow = true
         sphere.receiveShadow = true
@@ -190,7 +243,6 @@ function setupCradle() {
         const rope = new THREE.Line(ropeGeometry, ropeMaterial)
         cradleGroup.add(rope)
 
-        // Physics State tracking properties conforming to analytical report
         const bob = {
             anchorX: anchorX,
             theta: 0,
@@ -204,126 +256,171 @@ function setupCradle() {
             mesh: sphere,
             ropeGeometry: ropeGeometry,
             ropePoints: ropePoints,
-            inContactLastFrame: false // Tracking variable to prevent repeated trigger spamming within a compression cycle
+            inContactLastFrame: false
         }
 
-        // Apply initial lifting displacement to specific selected balls (Discrete State Transition)
+        // Initial condition (Ch.1 "الحالة الابتدائية"): lifted balls start
+        // from rest, ω0 = 0, at angle θ0.
         if (i < parameters.launchBalls) {
             bob.theta = - THREE.MathUtils.degToRad(parameters.launchAngleDeg)
             const sin = Math.sin(bob.theta)
             const cos = Math.cos(bob.theta)
             bob.x = bob.anchorX + config.stringLength * sin
             bob.y = config.topY - config.stringLength * cos
-            bob.vx = config.stringLength * bob.omega * cos
-            bob.vy = config.stringLength * bob.omega * sin
+            bob.vx = 0
+            bob.vy = 0
         }
 
         bobs.push(bob)
     }
+
+    // one contact-episode tracker per neighbor pair, used to measure the
+    // effective restitution coefficient e = v_separation / v_approach
+    contactEpisodes = []
+    for (let i = 0; i < bobs.length - 1; i++) {
+        contactEpisodes.push({ active: false, approachSpeed: 0 })
+    }
 }
 
 /**
- * Complete Physics Engine utilizing Finite State Mechanics & Non-Linear Hertz Theory
+ * Complete Physics Engine - Continuous pendulum ODE + discrete Hertz contact
  */
 function stepPhysics(dt) {
     const L = config.stringLength
     const g = parameters.gravity
+    const kh = computeBaseHertzStiffness(config.ballRadius) * parameters.stiffnessSoftening
 
-    // --- PHASE 1: Continuous Domain Domain Solving (Pendulum Equations with Friction) ---
-    for(let i = 0; i < bobs.length; i++) {
+    // --- PHASE 1: Continuous domain - damped pendulum ODE (Ch.1 §2) ---
+    for (let i = 0; i < bobs.length; i++) {
         const bob = bobs[i]
 
-        // Angular Restoration Torque Equation combined with Damping Coefficient
-        const angularAcceleration = - (g / L) * Math.sin(bob.theta) - parameters.angularDamping * bob.omega
-        
-        // Semi-implicit Euler integration for stable energy cycles
+        // α = -(g/L) sinθ - (c/m) ω - (b/(mL²)) ω
+        const angularAcceleration =
+            - (g / L) * Math.sin(bob.theta)
+            - (parameters.airResistanceC / bob.mass) * bob.omega
+            - (parameters.pivotFrictionB / (bob.mass * L * L)) * bob.omega
+
+        // Semi-implicit Euler (Ch.1 §3)
         bob.omega += angularAcceleration * dt
         bob.theta += bob.omega * dt
 
-        // Map Angular Position components directly back into Cartesian Coordinates
         const sin = Math.sin(bob.theta)
         const cos = Math.cos(bob.theta)
         bob.x = bob.anchorX + L * sin
         bob.y = config.topY - L * cos
 
-        // Convert current Angular Velocities into linear components
         bob.vx = L * bob.omega * cos
         bob.vy = L * bob.omega * sin
     }
 
-    // --- PHASE 2: Discrete Contact Domain Solving (Hertz Mechanical Interpenetration Forces) ---
-    // Multi-pass constraint validation handling cascading chain collisions simultaneously
+    // --- PHASE 2: Discrete domain - Hertzian contact (Ch.2 §4) ---
     for (let pass = 0; pass < 4; pass++) {
-        for(let i = 0; i < bobs.length - 1; i++) {
+        for (let i = 0; i < bobs.length - 1; i++) {
             const b1 = bobs[i]
-            const b2 = bobs[i+1]
+            const b2 = bobs[i + 1]
+            const episode = contactEpisodes[i]
 
-            // Find current physical delta values between neighboring surfaces
             const dx = b2.x - b1.x
             const dy = b2.y - b1.y
-            const distance = Math.sqrt(dx*dx + dy*dy)
+            const distance = Math.sqrt(dx * dx + dy * dy)
             const minDistance = b1.radius + b2.radius
 
-            // Check if spheres are interpenetrating (Deformation Area delta exists)
-            if(distance < minDistance) {
-                const delta = minDistance - distance // Micro-deformation depth (𝛿)
+            if (distance < minDistance) {
+                const delta = minDistance - distance // interpenetration δ
 
-                if(delta > 0) {
-                    // Compute Hertzian Non-Linear Normal Forces: F = Kh * 𝛿^(1.5)
-                    const hertzForceMagnitude = parameters.hertzStiffness * Math.pow(delta, 1.5)
+                if (delta > 0) {
+                    // Hertz normal force: F = K_h δ^1.5
+                    const hertzForceMagnitude = kh * Math.pow(delta, 1.5)
 
-                    // Find Normal projection vectors
                     const nx = dx / (distance || 1)
                     const ny = dy / (distance || 1)
 
-                    // Calculate relative velocity projected along impact normals
                     const rvx = b2.vx - b1.vx
                     const rvy = b2.vy - b1.vy
-                    const vNormal = rvx * nx + rvy * ny
+                    const vNormal = rvx * nx + rvy * ny // negative = approaching
 
-                    // --- AUDITORY SENSOR EMISSION TRIGGER ---
-                    // Trigger sound only during the initial frame of interpenetration to prevent continuous cycle sound generation loops
-                    if (!b1.inContactLastFrame && vNormal < -0.01 && pass === 0) {
-                        const impactSpeed = Math.abs(vNormal)
-                        playClackSound(impactSpeed)
+                    if (pass === 0) {
+                        if (!episode.active && vNormal < -0.01) {
+                            // contact just started: record approach speed
+                            episode.active = true
+                            episode.approachSpeed = Math.abs(vNormal)
+                            playClackSound(episode.approachSpeed)
+                        }
                     }
 
-                    // Add Viscoelastic Damping Force to regulate elastic dissipation behavior
+                    // Viscoelastic (Kelvin-Voigt style) contact damping
                     const dampingForce = - parameters.contactDamping * vNormal * Math.sqrt(delta)
                     const totalForce = Math.max(0, hertzForceMagnitude + dampingForce)
 
-                    // Compute resulting Linear Accelerations (F / m)
-                    const ax = totalForce * nx
-                    const ay = totalForce * ny
+                    // a = F/m for each ball along the contact normal
+                    const a1 = totalForce / b1.mass
+                    const a2 = totalForce / b2.mass
 
-                    // Modify individual Velocities based on applied Hertz interaction
-                    b1.vx -= ax * dt
-                    b1.vy -= ay * dt
-                    b2.vx += ax * dt
-                    b2.vy += ay * dt
+                    b1.vx -= a1 * nx * dt
+                    b1.vy -= a1 * ny * dt
+                    b2.vx += a2 * nx * dt
+                    b2.vy += a2 * ny * dt
 
-                    // Reproject Modified Linear Vector changes back into constraints of Pendulum Angular System
+                    // Reproject linear velocity back onto the pendulum's
+                    // tangential (constraint) direction: for v = Lω(cosθ,sinθ),
+                    // the tangential component recovers ω = (vx cosθ + vy sinθ)/L
                     const cos1 = Math.cos(b1.theta)
                     b1.omega = (b1.vx * cos1 + b1.vy * Math.sin(b1.theta)) / L
-                    
+
                     const cos2 = Math.cos(b2.theta)
                     b2.omega = (b2.vx * cos2 + b2.vy * Math.sin(b2.theta)) / L
-                    
+
                     b1.inContactLastFrame = true
                 }
             } else {
-                // Clear state once balls physically part ways out of the micro-deformation boundary
-                if (pass === 0) b1.inContactLastFrame = false
+                if (pass === 0) {
+                    b1.inContactLastFrame = false
+                    if (episode.active) {
+                        // Contact just ended: measure separation speed and
+                        // derive the effective restitution coefficient
+                        // e = v_separation / v_approach, exactly as defined
+                        // in Ch.2 §2-3 of the report.
+                        const dx2 = b2.x - b1.x
+                        const dy2 = b2.y - b1.y
+                        const dist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2) || 1
+                        const nx2 = dx2 / dist2
+                        const ny2 = dy2 / dist2
+                        const rvx2 = b2.vx - b1.vx
+                        const rvy2 = b2.vy - b1.vy
+                        const vSep = rvx2 * nx2 + rvy2 * ny2 // positive = separating
+
+                        if (episode.approachSpeed > 0.01 && vSep > 0) {
+                            parameters.lastMeasuredE = vSep / episode.approachSpeed
+                        }
+                        episode.active = false
+                    }
+                }
             }
         }
     }
 }
 
 /**
+ * Live total mechanical energy, U + K per ball (Ch.1 §4 validation check)
+ */
+function computeTotalEnergy() {
+    const L = config.stringLength
+    const g = parameters.gravity
+    let total = 0
+    for (const bob of bobs) {
+        const U = bob.mass * g * L * (1 - Math.cos(bob.theta))
+        const v = L * bob.omega
+        const K = 0.5 * bob.mass * v * v
+        total += U + K
+    }
+    return total
+}
+
+/**
  * Mirror computed abstract positions onto Renderable WebGL Meshes
  */
 function updateVisuals() {
-    for(let i = 0; i < bobs.length; i++) {
+    for (let i = 0; i < bobs.length; i++) {
         const bob = bobs[i]
         bob.mesh.position.set(bob.x, bob.y, 0)
 
@@ -341,13 +438,14 @@ setupCradle()
 const gui = new dat.GUI({ width: 380 })
 
 const envFolder = gui.addFolder('Environment Configuration')
-envFolder.add(parameters, 'gravity').min(0).max(25).step(0.1).name('Gravity (g)')
-envFolder.add(parameters, 'angularDamping').min(0).max(1).step(0.01).name('Air Resistance')
+envFolder.add(parameters, 'gravity').min(0).max(25).step(0.1).name('Gravity g (m/s²)')
+envFolder.add(parameters, 'airResistanceC').min(0).max(0.5).step(0.005).name('Air Resistance c')
+envFolder.add(parameters, 'pivotFrictionB').min(0).max(0.2).step(0.005).name('Pivot Friction b')
 envFolder.add(parameters, 'enableSound').name('Enable Clack Sound')
 envFolder.open()
 
 const hertzFolder = gui.addFolder('Hertzian Contact Mechanics')
-hertzFolder.add(parameters, 'hertzStiffness').min(1e5).max(1e7).step(1000).name('Stiffness (Kh)')
+hertzFolder.add(parameters, 'stiffnessSoftening').min(1e-5).max(1e-3).step(1e-5).name('Stiffness Scale')
 hertzFolder.add(parameters, 'contactDamping').min(0).max(50).step(0.1).name('Impact Absorption')
 hertzFolder.add(parameters, 'physicsHz').min(1000).max(4000).step(100).name('Physics Precision (Hz)')
 hertzFolder.open()
@@ -355,11 +453,18 @@ hertzFolder.open()
 const setupFolder = gui.addFolder('Cradle Assembly Setup')
 setupFolder.add(parameters, 'count').min(2).max(8).step(1).name('Total Balls Count').onChange(() => setupCradle())
 setupFolder.add(parameters, 'launchBalls').min(1).max(7).step(1).name('Balls to Drop').onChange((val) => {
-    if(val >= parameters.count) parameters.launchBalls = parameters.count - 1
+    if (val >= parameters.count) parameters.launchBalls = parameters.count - 1
 })
 setupFolder.add(parameters, 'launchAngleDeg').min(5).max(75).step(1).name('Drop Angle (°)').onChange(() => setupCradle())
 setupFolder.add(parameters, 'launch').name('Drop / Reset Cradle')
 setupFolder.open()
+
+// Live validation readouts, matching the report's suggestion to compute
+// energy every timestep and watch for unphysical growth.
+const validationFolder = gui.addFolder('Live Validation (report Ch.1 §4 / Ch.2 §3)')
+validationFolder.add(parameters, 'totalEnergy').name('Total Energy U+K (J)').listen()
+validationFolder.add(parameters, 'lastMeasuredE').name('Measured e (last hit)').listen()
+validationFolder.open()
 
 /**
  * Runtime Loop Engine Thread
@@ -372,11 +477,13 @@ const tick = () => {
     accumulator += delta
 
     const physicsStep = 1 / parameters.physicsHz
-    
-    while(accumulator >= physicsStep) {
+
+    while (accumulator >= physicsStep) {
         stepPhysics(physicsStep)
         accumulator -= physicsStep
     }
+
+    parameters.totalEnergy = computeTotalEnergy()
 
     updateVisuals()
     controls.update()
