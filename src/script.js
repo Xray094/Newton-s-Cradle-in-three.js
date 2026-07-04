@@ -32,6 +32,10 @@ import * as dat from 'dat.gui'
  * F_hertz = K_h * δ^1.5                        (Hertz's law, F ∝ δ^3/2)
  * K_h = (4/3) E_eff sqrt(R_eff)                 (generalized stiffness)
  * 1/E_eff = 2(1-ν²)/E   (identical spheres)     R_eff = R/2
+ * NOTE: when balls have DIFFERENT masses (see below) they also get
+ * different radii, so R_eff generalizes to (R1*R2)/(R1+R2) - see
+ * computeHertzStiffness() further down, used instead of the single-radius
+ * version for every contact pair.
  *
  * Restitution coefficient e (Ch.2 §2-3): the report *defines* e as the
  * ratio of separation speed to approach speed at a contact - it is an
@@ -39,11 +43,39 @@ import * as dat from 'dat.gui'
  * not something you dial in directly. So instead of faking it with a
  * bounce multiplier, this sim *measures* e live from every collision and
  * reports it back in the GUI, which is exactly how the report defines it.
+ *
+ * Chapter 3 "دراسة تأثير الحالات المختلفة على النظام" (Study of the
+ * different cases affecting the system) - reproduced below as one-click
+ * presets in the "Study Cases" GUI folder:
+ *   §1 رفع كرة واحدة وإفلاتها          -> Case ① Single Ball
+ *   §2 رفع كرتين وإفلاتهما             -> Case ② Two Balls
+ *   §3 تغيير عدد الكرات في النظام      -> Case ③ Mini 3-Ball System
+ *   تأثير اختلاف الكتل بين الكرات      -> Case ④ Unequal Masses (+ the
+ *        per-ball mass sliders below let you set ANY custom mass mix).
+ *        Report: "if the striking ball is lighter it rebounds backward;
+ *        if heavier it keeps moving forward but slower - unequal mass
+ *        breaks synchrony and scatters the balls chaotically."
+ *   §5 حالة النظام الواقعي (مع التخميد) -> Case ⑤ Realistic Damped System
  * ============================================================================
  */
 
 const STEEL_E = 200e9      // Young's modulus of steel (Pa)
 const STEEL_NU = 0.3       // Poisson's ratio of steel
+const MAX_BALLS = 8
+
+// IMPORTANT: the mass sliders in the GUI are bound directly to the
+// `ballMasses` array object below (massFolder.add(parameters.ballMasses, i)).
+// dat.gui keeps a reference to that exact array, so we must always mutate
+// it IN PLACE (write into existing slots) rather than doing
+// `parameters.ballMasses = [...]`, which would swap in a brand-new array
+// that the sliders no longer point to - they'd keep editing the old
+// (now-unused) array while the physics reads from the new one, silently
+// going out of sync. Every preset below goes through this helper instead.
+function setMasses(values) {
+    for (let i = 0; i < MAX_BALLS; i++) {
+        parameters.ballMasses[i] = values[i] !== undefined ? values[i] : 1.0
+    }
+}
 
 const parameters = {
     gravity: 9.81,
@@ -67,17 +99,106 @@ const parameters = {
     enableSound: true,
     launch: () => setupCradle(),
 
+    // Per-ball masses (kg, relative), report Ch.2 "تأثير اختلاف الكتل بين
+    // الكرات". Only the first `count` entries are actually simulated; the
+    // rest just sit unused until you raise the ball count. Radius scales
+    // with mass (constant-density spheres, mass ∝ r³) so heavier balls are
+    // visibly bigger, and color shifts warmer for heavier / cooler for
+    // lighter, so mass differences are readable at a glance.
+    ballMasses: new Array(MAX_BALLS).fill(1.0),
+    equalizeMasses: () => {
+        setMasses(new Array(MAX_BALLS).fill(1.0))
+        setupCradle()
+        gui.updateDisplay()
+    },
+
     // Live validation readouts (Ch.1 §4 energy check, Ch.2 §3 restitution)
     totalEnergy: 0,
-    lastMeasuredE: 1.0
+    lastMeasuredE: 1.0,
+
+    // ---- Study-case presets (Ch.3 "دراسة تأثير الحالات المختلفة") ----
+    caseSingleBall: () => {
+        parameters.count = 5
+        parameters.launchBalls = 1
+        parameters.launchAngleDeg = 30
+        setMasses(new Array(MAX_BALLS).fill(1.0))
+        parameters.airResistanceC = 0.01
+        parameters.pivotFrictionB = 0.005
+        setupCradle()
+        gui.updateDisplay()
+    },
+    caseTwoBalls: () => {
+        parameters.count = 5
+        parameters.launchBalls = 2
+        parameters.launchAngleDeg = 30
+        setMasses(new Array(MAX_BALLS).fill(1.0))
+        parameters.airResistanceC = 0.01
+        parameters.pivotFrictionB = 0.005
+        setupCradle()
+        gui.updateDisplay()
+    },
+    caseMiniSystem: () => {
+        parameters.count = 3
+        parameters.launchBalls = 1
+        parameters.launchAngleDeg = 30
+        setMasses(new Array(MAX_BALLS).fill(1.0))
+        parameters.airResistanceC = 0.01
+        parameters.pivotFrictionB = 0.005
+        setupCradle()
+        gui.updateDisplay()
+    },
+    caseUnequalMasses: () => {
+        parameters.count = 5
+        parameters.launchBalls = 1
+        parameters.launchAngleDeg = 30
+        // Deliberately unequal masses: report predicts the striking ball
+        // rebounds/continues unevenly and the chain loses perfect sync.
+        setMasses([1.0, 0.5, 1.0, 2.2, 1.0, 1.0, 1.0, 1.0])
+        parameters.airResistanceC = 0.01
+        parameters.pivotFrictionB = 0.005
+        setupCradle()
+        gui.updateDisplay()
+    },
+    caseRealisticDamping: () => {
+        parameters.count = 5
+        parameters.launchBalls = 1
+        parameters.launchAngleDeg = 30
+        setMasses(new Array(MAX_BALLS).fill(1.0))
+        parameters.airResistanceC = 0.15
+        parameters.pivotFrictionB = 0.08
+        setupCradle()
+        gui.updateDisplay()
+    }
 }
 
-// Derived (physically real) Hertz stiffness for identical steel spheres,
-// K_h = (4/3) * E_eff * sqrt(R_eff)
-function computeBaseHertzStiffness(radius) {
+// Derived (physically real) Hertz stiffness, generalized to two spheres of
+// DIFFERENT radii (needed now that mass, and therefore radius, can vary
+// per ball): K_h = (4/3) * E_eff * sqrt(R_eff), R_eff = (R1*R2)/(R1+R2)
+function computeHertzStiffness(r1, r2) {
     const Eeff = STEEL_E / (2 * (1 - STEEL_NU * STEEL_NU))
-    const Reff = radius / 2
+    const Reff = (r1 * r2) / (r1 + r2)
     return (4 / 3) * Eeff * Math.sqrt(Reff)
+}
+
+// mass -> radius assuming constant density (mass ∝ volume ∝ r³), anchored
+// so mass = 1.0 gives back the original config.ballRadius
+function radiusForMass(mass) {
+    return config.ballRadius * Math.cbrt(Math.max(mass, 0.05))
+}
+
+// Visual mass coding: light balls skew cool/cyan, heavy balls skew
+// warm/gold, baseline (mass = 1) stays the original neutral chrome.
+const COLOR_LIGHT = new THREE.Color(0x9fd8ef)
+const COLOR_NEUTRAL = new THREE.Color(0xdddddd)
+const COLOR_HEAVY = new THREE.Color(0xd8a83f)
+function colorForMass(mass) {
+    if (mass <= 1.0) {
+        const t = THREE.MathUtils.clamp((mass - 0.2) / 0.8, 0, 1)
+        return COLOR_LIGHT.clone().lerp(COLOR_NEUTRAL, t)
+    } else {
+        const t = THREE.MathUtils.clamp((mass - 1.0) / 4.0, 0, 1)
+        return COLOR_NEUTRAL.clone().lerp(COLOR_HEAVY, t)
+    }
 }
 
 // Canvas & Scene setup
@@ -194,7 +315,7 @@ function playClackSound(intensity) {
  * Newton's Cradle Architectural Configurations
  */
 const config = {
-    ballRadius: 0.22, // Realistic layout proportions
+    ballRadius: 0.22, // Realistic layout proportions (radius for a mass = 1.0 ball)
     stringLength: 1.5,
     topY: 2.2,
     frameDepth: 1.0  // Depth thickness mapping for the outer crossbeams
@@ -206,9 +327,6 @@ scene.add(cradleGroup)
 let bobs = []
 let contactEpisodes = [] // per-pair tracking used to measure e = v_sep/v_approach
 
-const ballGeometry = new THREE.SphereGeometry(config.ballRadius, 64, 64)
-// Polished mirror-chrome finish
-const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1.0, roughness: 0.02 })
 // Industrial structural matte frame
 const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x22262b, metalness: 0.7, roughness: 0.2 })
 const ropeMaterial = new THREE.LineBasicMaterial({ color: 0x555555 })
@@ -223,13 +341,27 @@ function setupCradle() {
     }
     bobs = []
 
-    const spacing = config.ballRadius * 2.001 // micro-gap between balls,
-                                               // referenced in Ch.2 §4 as the
-                                               // reason the shockwave takes
-                                               // a (very small) finite time
-                                               // to cross the chain
-    const totalWidth = (parameters.count - 1) * spacing
-    const structureLength = Math.max(totalWidth + 1.0, 2.0)
+    // Per-ball radius, derived from each ball's own mass (report Ch.2:
+    // "اختلاف الكتل بين الكرات"). All balls still touch their neighbours,
+    // just with a per-pair gap instead of one fixed spacing constant.
+    const radii = []
+    for (let i = 0; i < parameters.count; i++) {
+        radii.push(radiusForMass(parameters.ballMasses[i]))
+    }
+
+    const microGap = 0.001 // micro-gap between balls, referenced in Ch.2 §4
+                            // as the reason the shockwave takes a (very
+                            // small) finite time to cross the chain
+    const anchorXRaw = [0]
+    for (let i = 1; i < parameters.count; i++) {
+        anchorXRaw.push(anchorXRaw[i - 1] + radii[i - 1] + radii[i] + microGap)
+    }
+    const leftEdge = anchorXRaw[0] - radii[0]
+    const rightEdge = anchorXRaw[anchorXRaw.length - 1] + radii[radii.length - 1]
+    const centerShift = (leftEdge + rightEdge) / 2
+    const anchorXs = anchorXRaw.map(x => x - centerShift)
+
+    const structureLength = Math.max((rightEdge - leftEdge) + 1.0, 2.0)
     const halfDepth = config.frameDepth * 0.5
 
     // --- ENHANCED STRUCTURAL FRAME (Connected canopy structure) ---
@@ -273,9 +405,17 @@ function setupCradle() {
     }
 
     for (let i = 0; i < parameters.count; i++) {
-        const anchorX = (i - (parameters.count - 1) * 0.5) * spacing
+        const anchorX = anchorXs[i]
+        const mass = parameters.ballMasses[i]
+        const radius = radii[i]
 
-        const sphere = new THREE.Mesh(ballGeometry, ballMaterial)
+        // Each ball now gets its own geometry/material sized & colored by
+        // its own mass, instead of one shared sphere for every ball.
+        const sphereGeometry = new THREE.SphereGeometry(radius, 48, 48)
+        const sphereMaterial = new THREE.MeshStandardMaterial({
+            color: colorForMass(mass), metalness: 1.0, roughness: 0.02
+        })
+        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial)
         sphere.castShadow = true
         sphere.receiveShadow = true
         cradleGroup.add(sphere)
@@ -290,8 +430,8 @@ function setupCradle() {
             anchorX: anchorX,
             theta: 0,
             omega: 0,
-            radius: config.ballRadius,
-            mass: 1.0,
+            radius: radius,
+            mass: mass,
             x: anchorX,
             y: config.topY - config.stringLength,
             vx: 0,
@@ -331,7 +471,6 @@ function setupCradle() {
 function stepPhysics(dt) {
     const L = config.stringLength
     const g = parameters.gravity
-    const kh = computeBaseHertzStiffness(config.ballRadius) * parameters.stiffnessSoftening
 
     // --- PHASE 1: Continuous domain - damped pendulum ODE (Ch.1 §2) ---
     for (let i = 0; i < bobs.length; i++) {
@@ -372,7 +511,9 @@ function stepPhysics(dt) {
                 const delta = minDistance - distance // interpenetration δ
 
                 if (delta > 0) {
-                    // Hertz normal force: F = K_h δ^1.5
+                    // Hertz normal force: F = K_h δ^1.5 (K_h now computed
+                    // per-pair from each ball's own radius, see above)
+                    const kh = computeHertzStiffness(b1.radius, b2.radius) * parameters.stiffnessSoftening
                     const hertzForceMagnitude = kh * Math.pow(delta, 1.5)
 
                     const nx = dx / (distance || 1)
@@ -395,7 +536,12 @@ function stepPhysics(dt) {
                     const dampingForce = - parameters.contactDamping * vNormal * Math.sqrt(delta)
                     const totalForce = Math.max(0, hertzForceMagnitude + dampingForce)
 
-                    // a = F/m for each ball along the contact normal
+                    // a = F/m for each ball along the contact normal - this
+                    // is exactly what makes unequal-mass collisions behave
+                    // like the report describes (Ch.2 "تأثير اختلاف الكتل"):
+                    // a lighter struck ball accelerates more (rebounds
+                    // harder / flies off faster), a heavier one barely
+                    // budges, because a = F/m differs per ball.
                     const a1 = totalForce / b1.mass
                     const a2 = totalForce / b2.mass
 
@@ -480,6 +626,16 @@ setupCradle()
  */
 const gui = new dat.GUI({ width: 380 })
 
+// One-click reproductions of every case walked through in report Ch.3
+// "دراسة تأثير الحالات المختلفة على النظام"
+const caseFolder = gui.addFolder('📖 Study Cases (دراسة الحالات)')
+caseFolder.add(parameters, 'caseSingleBall').name('① Single Ball')
+caseFolder.add(parameters, 'caseTwoBalls').name('② Two Balls')
+caseFolder.add(parameters, 'caseMiniSystem').name('③ Mini 3-Ball System')
+caseFolder.add(parameters, 'caseUnequalMasses').name('④ Unequal Masses (Chaos)')
+caseFolder.add(parameters, 'caseRealisticDamping').name('⑤ Realistic Damped System')
+caseFolder.open()
+
 const envFolder = gui.addFolder('Environment Configuration')
 envFolder.add(parameters, 'gravity').min(0).max(25).step(0.1).name('Gravity g (m/s²)')
 envFolder.add(parameters, 'airResistanceC').min(0).max(0.5).step(0.005).name('Air Resistance c')
@@ -494,13 +650,22 @@ hertzFolder.add(parameters, 'physicsHz').min(1000).max(4000).step(100).name('Phy
 hertzFolder.open()
 
 const setupFolder = gui.addFolder('Cradle Assembly Setup')
-setupFolder.add(parameters, 'count').min(2).max(8).step(1).name('Total Balls Count').onChange(() => setupCradle())
-setupFolder.add(parameters, 'launchBalls').min(1).max(7).step(1).name('Balls to Drop').onChange((val) => {
+setupFolder.add(parameters, 'count').min(2).max(MAX_BALLS).step(1).name('Total Balls Count').onChange(() => setupCradle())
+setupFolder.add(parameters, 'launchBalls').min(1).max(MAX_BALLS - 1).step(1).name('Balls to Drop').onChange((val) => {
     if (val >= parameters.count) parameters.launchBalls = parameters.count - 1
 })
 setupFolder.add(parameters, 'launchAngleDeg').min(5).max(75).step(1).name('Drop Angle (°)').onChange(() => setupCradle())
 setupFolder.add(parameters, 'launch').name('Drop / Reset Cradle')
 setupFolder.open()
+
+// Per-ball mass sliders (report Ch.2 "اختلاف الكتل بين الكرات"). Only the
+// first `Total Balls Count` sliders are physically active - raise the
+// ball count above to bring more of them into play.
+const massFolder = gui.addFolder('⚖️ Ball Masses (only first N used)')
+for (let i = 0; i < MAX_BALLS; i++) {
+    massFolder.add(parameters.ballMasses, i).min(0.2).max(5.0).step(0.1).name(`Ball ${i + 1} Mass (kg)`).onChange(() => setupCradle())
+}
+massFolder.add(parameters, 'equalizeMasses').name('Reset All to 1 kg')
 
 // Live validation readouts, matching the report's suggestion to compute
 // energy every timestep and watch for unphysical growth.
