@@ -35,7 +35,17 @@ import * as dat from 'dat.gui'
  * NOTE: when balls have DIFFERENT masses (see below) they also get
  * different radii, so R_eff generalizes to (R1*R2)/(R1+R2) - see
  * computeHertzStiffness() further down, used instead of the single-radius
- * version for every contact pair.
+ * version for every contact pair. Two more realism refinements follow
+ * from this: (1) air resistance c scales per-ball with radius, since the
+ * report's drag law F_d=-cv is linear/Stokes-type (c ∝ r); (2) contact
+ * damping scales with the pair's reduced mass m_eff = m1*m2/(m1+m2), the
+ * standard approach in Hertz-contact DEM models, so a light ball hitting
+ * a heavy one doesn't get an unrealistically oversized damping force.
+ * Neither the Hertz force itself nor momentum conservation depend on
+ * mass scaling tricks though - those already work exactly for any mass
+ * ratio, because the contact force is equal-and-opposite (Newton's 3rd
+ * law) and each ball's acceleration is that same force divided by its
+ * OWN mass (Newton's 2nd law): Δp1 = -Δp2 automatically, always.
  *
  * Restitution coefficient e (Ch.2 §2-3): the report *defines* e as the
  * ratio of separation speed to approach speed at a contact - it is an
@@ -90,6 +100,15 @@ const parameters = {
                               // this preserves the qualitative physics
                               // (relative stiffness between configurations)
                               // while remaining real-time.
+                              // NOTE: near the top of this slider's range
+                              // you're intentionally approaching real
+                              // (un-softened) steel stiffness again, which
+                              // can outrun even the max Physics Precision
+                              // (Hz) and go numerically unstable - that's
+                              // an expected explicit-integration limit
+                              // (see the delta clamp safety net in
+                              // stepPhysics), not a modeling bug. Pair a
+                              // higher stiffness with a higher Hz.
     contactDamping: 15.0,      // viscoelastic damping during compression
     physicsHz: 2000,           // required to resolve microsecond-scale Hertz
                                // contact events without tunnelling (Ch.2 §4)
@@ -184,6 +203,20 @@ function computeHertzStiffness(r1, r2) {
 // so mass = 1.0 gives back the original config.ballRadius
 function radiusForMass(mass) {
     return config.ballRadius * Math.cbrt(Math.max(mass, 0.05))
+}
+
+// Per-ball air-resistance coefficient. The report's drag law is LINEAR in
+// velocity (F_d = -c v), which is the Stokes-drag regime, where the
+// coefficient itself scales linearly with the object's radius (c ∝ r) -
+// NOT with r² (that would be the quadratic/high-Reynolds drag regime,
+// which is a different force law entirely). Since balls of different mass
+// now have different radii, each ball needs its own effective c so a
+// bigger/heavier ball feels proportionally more absolute drag, exactly as
+// real Stokes drag would predict. At mass = 1.0 (radius = config.ballRadius)
+// this returns exactly `airResistanceC`, so the baseline behavior is
+// unchanged from before mass variation was added.
+function dragCoefficientForRadius(radius) {
+    return parameters.airResistanceC * (radius / config.ballRadius)
 }
 
 // Visual mass coding: light balls skew cool/cyan, heavy balls skew
@@ -477,9 +510,17 @@ function stepPhysics(dt) {
         const bob = bobs[i]
 
         // α = -(g/L) sinθ - (c/m) ω - (b/(mL²)) ω
+        // c here is this ball's own radius-scaled drag coefficient (see
+        // dragCoefficientForRadius) so bigger/heavier balls correctly feel
+        // more absolute air resistance, consistent with Stokes' linear
+        // drag law (F_d = -cv, c ∝ r). Pivot friction b is left as one
+        // constant shared by all balls, since it's a property of the
+        // suspension/bearing structure itself (report: "ثابت يصف شدة
+        // الاحتكاك في نقطة التعليق"), not of the individual ball.
+        const c_i = dragCoefficientForRadius(bob.radius)
         const angularAcceleration =
             - (g / L) * Math.sin(bob.theta)
-            - (parameters.airResistanceC / bob.mass) * bob.omega
+            - (c_i / bob.mass) * bob.omega
             - (parameters.pivotFrictionB / (bob.mass * L * L)) * bob.omega
 
         // Semi-implicit Euler (Ch.1 §3)
@@ -508,7 +549,22 @@ function stepPhysics(dt) {
             const minDistance = b1.radius + b2.radius
 
             if (distance < minDistance) {
-                const delta = minDistance - distance // interpenetration δ
+                const deltaRaw = minDistance - distance // interpenetration δ
+
+                // Numerical stability safety net: explicit integration of a
+                // Hertz spring is only stable if Δt is small relative to
+                // the contact's natural frequency (~sqrt(K_h/m_eff)), which
+                // grows with the Stiffness Scale slider. If a frame ever
+                // lets the balls overlap more than this, it means Δt was
+                // too coarse for the current stiffness and the raw δ^1.5
+                // force would explode into feedback runaway next step. We
+                // clamp only the FORCE calculation here (not the rendered
+                // position, which keeps evolving from θ, ω as normal) -
+                // this trades a little accuracy in that rare overshoot
+                // frame for keeping the whole system numerically bounded,
+                // instead of the balls flying off to infinity/NaN.
+                const maxDelta = 0.35 * Math.min(b1.radius, b2.radius)
+                const delta = Math.min(deltaRaw, maxDelta)
 
                 if (delta > 0) {
                     // Hertz normal force: F = K_h δ^1.5 (K_h now computed
@@ -532,8 +588,18 @@ function stepPhysics(dt) {
                         }
                     }
 
-                    // Viscoelastic (Kelvin-Voigt style) contact damping
-                    const dampingForce = - parameters.contactDamping * vNormal * Math.sqrt(delta)
+                    // Viscoelastic (Kelvin-Voigt style) contact damping.
+                    // Scaled by the reduced/effective mass m_eff =
+                    // m1*m2/(m1+m2), as is standard in Hertz-contact DEM
+                    // models (e.g. Hertz-Mindlin/Tsuji) - without this, a
+                    // very light ball hitting a very heavy one would feel
+                    // an unrealistically large damping force relative to
+                    // its own inertia. The (2 * m_eff) factor is chosen so
+                    // that for two equal 1kg balls (m_eff = 0.5) this
+                    // reduces to exactly the old constant-damping formula,
+                    // keeping default behavior unchanged.
+                    const meff = (b1.mass * b2.mass) / (b1.mass + b2.mass)
+                    const dampingForce = - parameters.contactDamping * (2 * meff) * vNormal * Math.sqrt(delta)
                     const totalForce = Math.max(0, hertzForceMagnitude + dampingForce)
 
                     // a = F/m for each ball along the contact normal - this
