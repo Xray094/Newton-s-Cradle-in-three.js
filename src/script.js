@@ -118,6 +118,16 @@ const parameters = {
     enableSound: true,
     launch: () => setupCradle(),
 
+    // Pendulum (string) length. Kept in `parameters` instead of `config` so
+    // it's GUI-controllable. GUI slider only allows lengthening it (min ==
+    // the original 1.5m default) - see the "String Length" control below.
+    // Lengthening it does NOT push the balls toward/into the floor: the
+    // frame's height (config.topY) is recomputed from this value every
+    // time setupCradle() runs, so the balls always rest at the same
+    // height above the ground and only the support frame grows taller -
+    // like swapping in a taller stand for a longer pendulum.
+    stringLength: 1.5,
+
     // Per-ball masses (kg, relative), report Ch.2 "تأثير اختلاف الكتل بين
     // الكرات". Only the first `count` entries are actually simulated; the
     // rest just sit unused until you raise the ball count. Radius scales
@@ -140,6 +150,7 @@ const parameters = {
         parameters.count = 5
         parameters.launchBalls = 1
         parameters.launchAngleDeg = 30
+        parameters.stringLength = 1.5
         setMasses(new Array(MAX_BALLS).fill(1.0))
         parameters.airResistanceC = 0.01
         parameters.pivotFrictionB = 0.005
@@ -150,6 +161,7 @@ const parameters = {
         parameters.count = 5
         parameters.launchBalls = 2
         parameters.launchAngleDeg = 30
+        parameters.stringLength = 1.5
         setMasses(new Array(MAX_BALLS).fill(1.0))
         parameters.airResistanceC = 0.01
         parameters.pivotFrictionB = 0.005
@@ -160,6 +172,7 @@ const parameters = {
         parameters.count = 3
         parameters.launchBalls = 1
         parameters.launchAngleDeg = 30
+        parameters.stringLength = 1.5
         setMasses(new Array(MAX_BALLS).fill(1.0))
         parameters.airResistanceC = 0.01
         parameters.pivotFrictionB = 0.005
@@ -170,6 +183,7 @@ const parameters = {
         parameters.count = 5
         parameters.launchBalls = 1
         parameters.launchAngleDeg = 30
+        parameters.stringLength = 1.5
         // Deliberately unequal masses: report predicts the striking ball
         // rebounds/continues unevenly and the chain loses perfect sync.
         setMasses([1.0, 0.5, 1.0, 2.2, 1.0, 1.0, 1.0, 1.0])
@@ -182,6 +196,7 @@ const parameters = {
         parameters.count = 5
         parameters.launchBalls = 1
         parameters.launchAngleDeg = 30
+        parameters.stringLength = 1.5
         setMasses(new Array(MAX_BALLS).fill(1.0))
         parameters.airResistanceC = 0.15
         parameters.pivotFrictionB = 0.08
@@ -349,10 +364,16 @@ function playClackSound(intensity) {
  */
 const config = {
     ballRadius: 0.22, // Realistic layout proportions (radius for a mass = 1.0 ball)
-    stringLength: 1.5,
     topY: 2.2,
     frameDepth: 1.0  // Depth thickness mapping for the outer crossbeams
 }
+
+// How high above the ground the balls rest at their original defaults
+// (topY 2.2 - stringLength 1.5 = 0.7). setupCradle() recomputes config.topY
+// from this constant plus the current pendulum length every time it runs,
+// so lengthening the rope always grows the frame taller instead of
+// dropping the balls toward the floor.
+const REST_HEIGHT_ABOVE_GROUND = 0.7
 
 // Global structural groups and data tracking
 let cradleGroup = new THREE.Group()
@@ -373,6 +394,12 @@ function setupCradle() {
         cradleGroup.remove(obj)
     }
     bobs = []
+
+    // Frame height follows the current pendulum length so the balls always
+    // rest at the same height above the ground (see REST_HEIGHT_ABOVE_GROUND
+    // above) - lengthening the "String Length" slider grows the support
+    // frame taller instead of pushing the balls into the floor.
+    config.topY = REST_HEIGHT_ABOVE_GROUND + parameters.stringLength
 
     // Per-ball radius, derived from each ball's own mass (report Ch.2:
     // "اختلاف الكتل بين الكرات"). All balls still touch their neighbours,
@@ -466,7 +493,7 @@ function setupCradle() {
             radius: radius,
             mass: mass,
             x: anchorX,
-            y: config.topY - config.stringLength,
+            y: config.topY - parameters.stringLength,
             vx: 0,
             vy: 0,
             mesh: sphere,
@@ -481,8 +508,8 @@ function setupCradle() {
             bob.theta = - THREE.MathUtils.degToRad(parameters.launchAngleDeg)
             const sin = Math.sin(bob.theta)
             const cos = Math.cos(bob.theta)
-            bob.x = bob.anchorX + config.stringLength * sin
-            bob.y = config.topY - config.stringLength * cos
+            bob.x = bob.anchorX + parameters.stringLength * sin
+            bob.y = config.topY - parameters.stringLength * cos
             bob.vx = 0
             bob.vy = 0
         }
@@ -502,7 +529,7 @@ function setupCradle() {
  * Complete Physics Engine - Continuous pendulum ODE + discrete Hertz contact
  */
 function stepPhysics(dt) {
-    const L = config.stringLength
+    const L = parameters.stringLength
     const g = parameters.gravity
 
     // --- PHASE 1: Continuous domain - damped pendulum ODE (Ch.1 §2) ---
@@ -659,7 +686,7 @@ function stepPhysics(dt) {
  * Live total mechanical energy, U + K per ball (Ch.1 §4 validation check)
  */
 function computeTotalEnergy() {
-    const L = config.stringLength
+    const L = parameters.stringLength
     const g = parameters.gravity
     let total = 0
     for (const bob of bobs) {
@@ -721,6 +748,7 @@ setupFolder.add(parameters, 'launchBalls').min(1).max(MAX_BALLS - 1).step(1).nam
     if (val >= parameters.count) parameters.launchBalls = parameters.count - 1
 })
 setupFolder.add(parameters, 'launchAngleDeg').min(5).max(75).step(1).name('Drop Angle (°)').onChange(() => setupCradle())
+setupFolder.add(parameters, 'stringLength').min(1.5).max(3.0).step(0.05).name('String Length (m)').onChange(() => setupCradle())
 setupFolder.add(parameters, 'launch').name('Drop / Reset Cradle')
 setupFolder.open()
 
