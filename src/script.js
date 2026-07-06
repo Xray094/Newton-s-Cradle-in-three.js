@@ -721,7 +721,7 @@ const gui = new dat.GUI({ width: 380 })
 
 // One-click reproductions of every case walked through in report Ch.3
 // "دراسة تأثير الحالات المختلفة على النظام"
-const caseFolder = gui.addFolder('📖 Study Cases (دراسة الحالات)')
+const caseFolder = gui.addFolder(' Study Cases')
 caseFolder.add(parameters, 'caseSingleBall').name('① Single Ball')
 caseFolder.add(parameters, 'caseTwoBalls').name('② Two Balls')
 caseFolder.add(parameters, 'caseMiniSystem').name('③ Mini 3-Ball System')
@@ -755,7 +755,7 @@ setupFolder.open()
 // Per-ball mass sliders (report Ch.2 "اختلاف الكتل بين الكرات"). Only the
 // first `Total Balls Count` sliders are physically active - raise the
 // ball count above to bring more of them into play.
-const massFolder = gui.addFolder('⚖️ Ball Masses (only first N used)')
+const massFolder = gui.addFolder(' Ball Masses ')
 for (let i = 0; i < MAX_BALLS; i++) {
     massFolder.add(parameters.ballMasses, i).min(0.2).max(5.0).step(0.1).name(`Ball ${i + 1} Mass (kg)`).onChange(() => setupCradle())
 }
@@ -763,7 +763,7 @@ massFolder.add(parameters, 'equalizeMasses').name('Reset All to 1 kg')
 
 // Live validation readouts, matching the report's suggestion to compute
 // energy every timestep and watch for unphysical growth.
-const validationFolder = gui.addFolder('Live Validation (report Ch.1 §4 / Ch.2 §3)')
+const validationFolder = gui.addFolder('Live Validation')
 validationFolder.add(parameters, 'totalEnergy').name('Total Energy U+K (J)').listen()
 validationFolder.add(parameters, 'lastMeasuredE').name('Measured e (last hit)').listen()
 validationFolder.open()
