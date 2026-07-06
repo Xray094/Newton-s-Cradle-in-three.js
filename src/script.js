@@ -143,6 +143,8 @@ const parameters = {
 
     // Live validation readouts (Ch.1 §4 energy check, Ch.2 §3 restitution)
     totalEnergy: 0,
+    potentialEnergy: 0,
+    kineticEnergy: 0,
 
     // ---- Study-case presets (Ch.3 "دراسة تأثير الحالات المختلفة") ----
     caseSingleBall: () => {
@@ -684,17 +686,27 @@ function stepPhysics(dt) {
 /**
  * Live total mechanical energy, U + K per ball (Ch.1 §4 validation check)
  */
-function computeTotalEnergy() {
+function computeEnergies() {
     const L = parameters.stringLength
     const g = parameters.gravity
-    let total = 0
+
+    let U = 0
+    let K = 0
+
     for (const bob of bobs) {
-        const U = bob.mass * g * L * (1 - Math.cos(bob.theta))
+        const potential = bob.mass * g * L * (1 - Math.cos(bob.theta))
         const v = L * bob.omega
-        const K = 0.5 * bob.mass * v * v
-        total += U + K
+        const kinetic = 0.5 * bob.mass * v * v
+
+        U += potential
+        K += kinetic
     }
-    return total
+
+    return {
+        U,
+        K,
+        total: U + K
+    }
 }
 
 /**
@@ -765,7 +777,22 @@ const validationFolder = gui.addFolder('Live Validation')
 // at creation time (0 -> 0 decimals, forever, regardless of what the
 // live number becomes). Overriding __precision directly after creation
 // forces toFixed(1) on every update instead.
-const energyController = validationFolder.add(parameters, 'totalEnergy').name('Total Energy U+K (J)').listen()
+const potentialController = validationFolder
+    .add(parameters, 'potentialEnergy')
+    .name('Potential Energy U (J)')
+    .listen()
+potentialController.__precision = 1
+
+const kineticController = validationFolder
+    .add(parameters, 'kineticEnergy')
+    .name('Kinetic Energy K (J)')
+    .listen()
+kineticController.__precision = 1
+
+const energyController = validationFolder
+    .add(parameters, 'totalEnergy')
+    .name('Total Energy U+K (J)')
+    .listen()
 energyController.__precision = 1
 validationFolder.open()
 
@@ -786,7 +813,11 @@ const tick = () => {
         accumulator -= physicsStep
     }
 
-    parameters.totalEnergy = computeTotalEnergy()
+    const energies = computeEnergies()
+
+    parameters.potentialEnergy = energies.U
+    parameters.kineticEnergy = energies.K
+    parameters.totalEnergy = energies.total
 
     updateVisuals()
     controls.update()
