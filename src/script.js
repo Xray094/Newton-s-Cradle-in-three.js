@@ -143,7 +143,6 @@ const parameters = {
 
     // Live validation readouts (Ch.1 §4 energy check, Ch.2 §3 restitution)
     totalEnergy: 0,
-    lastMeasuredE: 1.0,
 
     // ---- Study-case presets (Ch.3 "دراسة تأثير الحالات المختلفة") ----
     caseSingleBall: () => {
@@ -722,11 +721,11 @@ const gui = new dat.GUI({ width: 380 })
 // One-click reproductions of every case walked through in report Ch.3
 // "دراسة تأثير الحالات المختلفة على النظام"
 const caseFolder = gui.addFolder(' Study Cases')
-caseFolder.add(parameters, 'caseSingleBall').name('① Single Ball')
-caseFolder.add(parameters, 'caseTwoBalls').name('② Two Balls')
-caseFolder.add(parameters, 'caseMiniSystem').name('③ Mini 3-Ball System')
-caseFolder.add(parameters, 'caseUnequalMasses').name('④ Unequal Masses (Chaos)')
-caseFolder.add(parameters, 'caseRealisticDamping').name('⑤ Realistic Damped System')
+caseFolder.add(parameters, 'caseSingleBall').name('Single Ball')
+caseFolder.add(parameters, 'caseTwoBalls').name('Two Balls')
+caseFolder.add(parameters, 'caseMiniSystem').name('Mini 3-Ball System')
+caseFolder.add(parameters, 'caseUnequalMasses').name('Unequal Masses')
+caseFolder.add(parameters, 'caseRealisticDamping').name('Realistic Damped System')
 caseFolder.open()
 
 const envFolder = gui.addFolder('Environment Configuration')
@@ -735,12 +734,6 @@ envFolder.add(parameters, 'airResistanceC').min(0).max(0.5).step(0.005).name('Ai
 envFolder.add(parameters, 'pivotFrictionB').min(0).max(0.2).step(0.005).name('Pivot Friction b')
 envFolder.add(parameters, 'enableSound').name('Enable Clack Sound')
 envFolder.open()
-
-const hertzFolder = gui.addFolder('Hertzian Contact Mechanics')
-hertzFolder.add(parameters, 'stiffnessSoftening').min(1e-5).max(1e-3).step(1e-5).name('Stiffness Scale')
-hertzFolder.add(parameters, 'contactDamping').min(0).max(50).step(0.1).name('Impact Absorption')
-hertzFolder.add(parameters, 'physicsHz').min(1000).max(4000).step(100).name('Physics Precision (Hz)')
-hertzFolder.open()
 
 const setupFolder = gui.addFolder('Cradle Assembly Setup')
 setupFolder.add(parameters, 'count').min(2).max(MAX_BALLS).step(1).name('Total Balls Count').onChange(() => setupCradle())
@@ -757,15 +750,23 @@ setupFolder.open()
 // ball count above to bring more of them into play.
 const massFolder = gui.addFolder(' Ball Masses ')
 for (let i = 0; i < MAX_BALLS; i++) {
-    massFolder.add(parameters.ballMasses, i).min(0.2).max(5.0).step(0.1).name(`Ball ${i + 1} Mass (kg)`).onChange(() => setupCradle())
+    massFolder.add(parameters.ballMasses, i).min(1).max(5.0).step(0.1).name(`Ball ${i + 1} Mass (kg)`).onChange(() => setupCradle())
 }
 massFolder.add(parameters, 'equalizeMasses').name('Reset All to 1 kg')
 
 // Live validation readouts, matching the report's suggestion to compute
 // energy every timestep and watch for unphysical growth.
+// Live validation readouts, matching the report's suggestion to compute
+// energy every timestep and watch for unphysical growth.
 const validationFolder = gui.addFolder('Live Validation')
-validationFolder.add(parameters, 'totalEnergy').name('Total Energy U+K (J)').listen()
-validationFolder.add(parameters, 'lastMeasuredE').name('Measured e (last hit)').listen()
+ 
+// FIX for 1-decimal display: dat.GUI's NumberControllerBox picks its
+// display precision from the DECIMALS OF THE INITIAL VALUE it's given
+// at creation time (0 -> 0 decimals, forever, regardless of what the
+// live number becomes). Overriding __precision directly after creation
+// forces toFixed(1) on every update instead.
+const energyController = validationFolder.add(parameters, 'totalEnergy').name('Total Energy U+K (J)').listen()
+energyController.__precision = 1
 validationFolder.open()
 
 /**
