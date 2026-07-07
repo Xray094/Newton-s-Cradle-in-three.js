@@ -35,6 +35,7 @@ const parameters = {
     totalEnergy: 0,
     potentialEnergy: 0,
     kineticEnergy: 0,
+    lastMeasuredE: 0.995,
 
     caseSingleBall: () => {
         parameters.count = 5
@@ -435,7 +436,10 @@ function stepPhysics(dt) {
                         const vSep = rvx2 * nx2 + rvy2 * ny2
 
                         if (episode.approachSpeed > 0.01 && vSep > 0) {
-                            parameters.lastMeasuredE = vSep / episode.approachSpeed
+                             const calculatedE = vSep / episode.approachSpeed
+                             if (calculatedE < 1.0) {
+                                    parameters.lastMeasuredE = calculatedE
+                            }
                         }
                         episode.active = false
                     }
@@ -532,6 +536,13 @@ const energyController = validationFolder
     .name('Total Energy U+K (J)')
     .listen()
 energyController.__precision = 1
+
+const eController = validationFolder
+    .add(parameters, 'lastMeasuredE')
+    .name('Measured e (last hit)')
+    .listen()
+eController.__precision = 5 
+
 validationFolder.open()
 
 const clock = new THREE.Clock()
