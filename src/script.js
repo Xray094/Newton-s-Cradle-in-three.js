@@ -108,19 +108,6 @@ function dragCoefficientForRadius(radius) {
     return parameters.airResistanceC * (radius / config.ballRadius)
 }
 
-const COLOR_LIGHT = new THREE.Color(0x9fd8ef)
-const COLOR_NEUTRAL = new THREE.Color(0xdddddd)
-const COLOR_HEAVY = new THREE.Color(0xd8a83f)
-function colorForMass(mass) {
-    if (mass <= 1.0) {
-        const t = THREE.MathUtils.clamp((mass - 0.2) / 0.8, 0, 1)
-        return COLOR_LIGHT.clone().lerp(COLOR_NEUTRAL, t)
-    } else {
-        const t = THREE.MathUtils.clamp((mass - 1.0) / 4.0, 0, 1)
-        return COLOR_NEUTRAL.clone().lerp(COLOR_HEAVY, t)
-    }
-}
-
 const canvas = document.querySelector('canvas.webgl')
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(0xf1f3f5)
@@ -294,7 +281,7 @@ function setupCradle() {
 
         const sphereGeometry = new THREE.SphereGeometry(radius, 48, 48)
         const sphereMaterial = new THREE.MeshStandardMaterial({
-            color: colorForMass(mass), metalness: 1.0, roughness: 0.02
+            color: 0xdddddd, metalness: 1.0, roughness: 0.02
         })
         const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial)
         sphere.castShadow = true
